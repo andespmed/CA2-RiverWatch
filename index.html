@@ -34,7 +34,6 @@
       padding:10px 14px; border-radius:8px; font-weight:600; font-size:0.88rem; margin-bottom:12px;
     }
 
-    /* KPI Summary Strip */
     .kpis { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin-bottom:12px; }
     @media(max-width:760px){ .kpis{ grid-template-columns:repeat(2, 1fr); } }
     .kpi { background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:11px 13px; box-shadow:0 1px 2px rgba(11,57,84,0.05); }
@@ -57,6 +56,8 @@
       font-size:0.86rem; font-weight:600; cursor:pointer; transition:background 0.15s;
     }
     button:hover { background:var(--teal-h); }
+    button.sec { background:#5c7080; padding:7px 11px; font-size:0.8rem; }
+    button.sec:hover { background:#455663; }
     button.ghost { background:rgba(255,255,255,0.16); border:1px solid rgba(255,255,255,0.35); color:#fff; padding:6px 11px; font-size:0.8rem; }
     button.ghost:hover { background:rgba(255,255,255,0.26); }
     button.chip {
@@ -86,7 +87,6 @@
     .src-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px; margin-top:10px; font-size:0.8rem; }
     .src-box { background:#f8fbfd; border:1px solid var(--bd); border-radius:8px; padding:8px 10px; }
 
-    /* Responsive Table -> Mobile Cards */
     table { width:100%; border-collapse:collapse; font-size:0.85rem; }
     th, td { text-align:left; padding:9px 8px; border-bottom:1px solid var(--bd); vertical-align:top; }
     th { background:#f1f6fa; color:var(--navy); font-weight:700; font-size:0.8rem; }
@@ -119,7 +119,7 @@
   </div>
   <div id="rehearsalBanner" class="rehearsal"></div>
 
-  <div class="kpis" id="kpiStrip">
+  <div class="kpis">
     <div class="kpi"><div class="lbl">Barriers</div><div class="val" id="kpiBarriers">–</div></div>
     <div class="kpi"><div class="lbl">Standby</div><div class="val" id="kpiStandby">–</div></div>
     <div class="kpi"><div class="lbl">Normal</div><div class="val" id="kpiNormal">–</div></div>
@@ -135,9 +135,12 @@
       <button type="button" class="chip" data-q="Which town should be first in line for a flood-defence study?">Area Manager: study priority</button>
       <button type="button" class="chip" data-q="Will my house in Mallow flood tonight?">Out of scope: house in Mallow</button>
     </div>
-    <textarea id="questionInput" placeholder="Ask about tonight's plan, a specific town, a what-if flow, or the flood-defence study…"></textarea>
+    <textarea id="questionInput" placeholder="Ask about tonight's plan, a follow-up question, a what-if flow, or the flood-defence study…"></textarea>
     <div class="row" style="margin-top:8px; justify-content:space-between;">
-      <button id="askBtn" type="button">Ask River Watch</button>
+      <div class="row">
+        <button id="askBtn" type="button">Ask River Watch</button>
+        <button id="clearBtn" type="button" class="sec">Clear thread</button>
+      </div>
       <span class="small">Reads Sheet, GloFAS &amp; Met Éireann live on every question</span>
     </div>
     <div id="aiError" class="err" style="display:none;"></div>
@@ -203,6 +206,7 @@ const CREW_AREAS = {
 };
 
 let sessionQuestions = 0, sessionTokens = 0;
+let chatHistory = []; // keeps last 4 Q&A turns for follow-up questions
 
 function parseCSV(text) {
   const rows = [];
@@ -261,7 +265,7 @@ function assignCrews(townPlans) {
       return;
     }
     const t = needBarriers[idx];
-    const w = (needBarriers.length - idx) * 10000 + t.pctAboveP99;
+    const w = Math.pow(2, needBarriers.length - 1 - idx);
     for (const [crew, area] of Object.entries(crewDefs)) {
       if (area.includes(t.town) && cap[crew] > 0) {
         cap[crew]--; curMap[t.town] = crew;
@@ -333,6 +337,7 @@ async function fetchLiveState() {
     const times = fObj.daily.time;
     const livePeak = Math.max(...vals.filter(v => v != null));
     const livePeakDay = times[vals.indexOf(livePeak)];
+    const dailyForecast = times.map((d, i) => `${d}: ${vals[i]} m3/s`);
 
     const flowOvrRaw = (s.flow_override_m3s || "").trim();
     const hasFlowOvr = flowOvrRaw !== "" && !isNaN(Number(flowOvrRaw));
@@ -359,10 +364,10 @@ async function fetchLiveState() {
     return {
       town: h.town, river: h.river, counties,
       grid: `${fObj.latitude.toFixed(3)}, ${fObj.longitude.toFixed(3)}`,
-      livePeak, livePeakDay,
+      dailyForecast, livePeak, livePeakDay,
       flowOverride: hasFlowOvr ? Number(flowOvrRaw) : null,
       effectivePeak, p95: h.p95_m3s, p99: h.p99_m3s, pctAboveP99,
-      liveWarnings: townMet.map(w => `${w.level} ${w.type}`),
+      liveWarnings: townMet.map(w => `${w.level} ${w.type} (${w.onset || ""} to ${w.expiry || ""}): ${w.headline || ""}`),
       warningOverride: hasWarnOvr ? warnOvr : null,
       stepUpApplied, hasYellowNote: hasYellowLive || warnOvr === "yellow",
       flowLevel, finalLevel, barrierSets, cannotErectBarriers,
@@ -435,7 +440,6 @@ function renderState(state) {
   }).join("");
 }
 
-// Convert markdown cleanly to safe HTML so raw ** and * never show
 function formatAnswerHTML(raw) {
   const esc = raw.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   const bolded = esc.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -460,17 +464,18 @@ async function askGemini(question, state) {
     throw new Error("Apps Script proxy URL is not configured in index.html yet.");
   }
 
-  // Send compact data (~90% fewer tokens)
   const compactContext = {
     fetchedAt: state.fetchedAt,
     forecastWindow: state.forecastWindow,
     crews: state.crewResult,
     towns: state.towns.map(t => ({
       town: t.town, river: t.river, counties: t.counties,
+      dailyForecast: t.dailyForecast,
       livePeak: t.livePeak, livePeakDay: t.livePeakDay,
       flowOverride: t.flowOverride, effectivePeak: t.effectivePeak,
       p95: t.p95, p99: t.p99, pctAboveP99: t.pctAboveP99,
       warningOverride: t.warningOverride, liveWarnings: t.liveWarnings,
+      hasYellowNote: t.hasYellowNote,
       finalLevel: t.finalLevel, assignedCrew: t.assignedCrew,
       barrierSets: t.barrierSets, cannotErectBarriers: t.cannotErectBarriers,
       unassignedFlag: t.unassignedFlag, notes: t.notes,
@@ -482,21 +487,26 @@ async function askGemini(question, state) {
 Style & Conciseness:
 - Be concise and direct. Answer ONLY what the user asked—do not list all 8 towns unless they ask for the overall plan.
 - Group plans cleanly by action level (Barriers, Standby, Normal) + Crew assignments.
-- Cite data sources compactly inline (e.g., [GloFAS 2026-11-26], [GloFAS 2016–2025 p95/p99], [Sheet], [Met Éireann]).
+- Cite data sources compactly inline with date/hour (e.g., [GloFAS peak 2026-11-26], [GloFAS 2016–2025 p95/p99], [Sheet], [Met Éireann]).
 Rules:
-1. Use ONLY the live data provided. Never invent values.
+1. Use ONLY the LIVE DATA provided for the current turn. Never invent values.
 2. If any town uses flowOverride or warningOverride, clearly state it is a rehearsal value.
 3. For hypothetical "what-if" questions, apply the Flood Plan rules (Normal < p95, Standby >= p95, Barriers >= p99, +1 level on Orange/Red, crew areas/notes, barrier_sets) and label the hypothetical input clearly.
 4. For the Area Manager's study question, give the #1 town, its winter event count (2016/17–2024/25, Oct–Mar), compare last 4 vs first 4 winters, and name one limitation of event counts.
 5. Out of scope (coastal/tidal flooding, road closures, insurance, individual houses): refuse honestly and direct the user to the council's area office.
 6. Keep any human-decision reminder to one brief sentence.`;
 
+  const contents = [
+    ...chatHistory.slice(-8), // last 4 Q&A pairs for follow-up context
+    {
+      role: "user",
+      parts: [{ text: `LIVE DATA (fetched ${state.fetchedAt}):\n${JSON.stringify(compactContext)}\n\nQUESTION: ${question}` }]
+    }
+  ];
+
   const payload = {
     systemInstruction: { parts: [{ text: systemPrompt }] },
-    contents: [{
-      role: "user",
-      parts: [{ text: `LIVE DATA:\n${JSON.stringify(compactContext)}\n\nQUESTION: ${question}` }]
-    }],
+    contents,
     generationConfig: { temperature: 0.1 }
   };
 
@@ -519,7 +529,12 @@ Rules:
   document.getElementById("usageStats").textContent =
     `Questions: ${sessionQuestions} · Tokens: ${sessionTokens} · Free Tier ($0.00)`;
 
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response returned.";
+  const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response returned.";
+  chatHistory.push(
+    { role: "user", parts: [{ text: question }] },
+    { role: "model", parts: [{ text: replyText }] }
+  );
+  return replyText;
 }
 
 async function refreshNow() {
@@ -537,6 +552,11 @@ async function refreshNow() {
 }
 
 document.getElementById("refreshBtn").onclick = refreshNow;
+document.getElementById("clearBtn").onclick = () => {
+  chatHistory = [];
+  document.getElementById("aiAnswer").style.display = "none";
+  document.getElementById("aiError").style.display = "none";
+};
 document.querySelectorAll(".chip").forEach(btn => {
   btn.onclick = () => { document.getElementById("questionInput").value = btn.dataset.q; };
 });
