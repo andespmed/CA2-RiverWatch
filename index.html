@@ -503,10 +503,10 @@ Rules:
     }
   ];
 
-  const payload = {
+ const payload = {
     systemInstruction: { parts: [{ text: systemPrompt }] },
     contents,
-    generationConfig: { temperature: 0.1 }
+    generationConfig: { maxOutputTokens: 2048 }
   };
 
   const res = await fetch(APPS_SCRIPT_URL, {
@@ -522,13 +522,20 @@ Rules:
   }
 
   const data = wrapped.data;
+  console.log("Gemini response:", data);
   const meta = data.usageMetadata || {};
   sessionQuestions++;
   sessionTokens += (meta.totalTokenCount || 0);
   document.getElementById("usageStats").textContent =
     `Questions: ${sessionQuestions} · Tokens: ${sessionTokens} · Free Tier ($0.00)`;
 
-  const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response returned.";
+  const cand = data.candidates?.[0];
+  const parts = cand?.content?.parts || [];
+  let replyText = parts.filter(p => !p.thought && p.text).map(p => p.text).join("");
+  if (!replyText) replyText = "No response returned (finishReason: " + (cand?.finishReason || "unknown") + ").";
+  else if (cand?.finishReason && cand.finishReason !== "STOP") {
+    replyText += `\n\n[Note: stopped early — ${cand.finishReason}]`;
+  }
   chatHistory.push(
     { role: "user", parts: [{ text: question }] },
     { role: "model", parts: [{ text: replyText }] }
